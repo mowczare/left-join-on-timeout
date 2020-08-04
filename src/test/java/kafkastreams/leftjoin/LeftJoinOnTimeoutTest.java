@@ -25,7 +25,6 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.util.*;
 import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.TimeUnit;
 
 import static java.util.Arrays.asList;
 import static java.util.Collections.singletonList;
@@ -51,6 +50,8 @@ public class LeftJoinOnTimeoutTest {
 
     private Producer<Long, String> producer;
 
+    private CancellableRecordQueue queue;
+
     private ConcurrentLinkedQueue<ConsumerRecord<Long, String>> joinedMessages;
 
     private static final long KEY_1 = 1L;
@@ -65,20 +66,20 @@ public class LeftJoinOnTimeoutTest {
 
     @BeforeEach
     public void beforeEach() {
-//        kafkaEmbedded.addTopics(TOPICS.toArray(new String[TOPICS.size()]));
-//        producer = producer(LongSerializer.class, StringSerializer.class);
-        joinedMessages = subscribe(TARGET_TOPIC);
+        queue = new CancellableRecordQueue();
+        joinedMessages = queue.subscribe(TARGET_TOPIC);
     }
 
     @AfterEach
     public void afterEach() {
+        queue.unsubscribe();
         joinedMessages.clear();
     }
 
     @Test
-    public void shouldJoinLeftWithRight(){
+    public void shouldJoinLeftWithRight() {
 
-        KafkaStreams kafkaStreams = buildLeftJoinTopologyLongWindow();
+        KafkaStreams kafkaStreams = buildLeftJoinTopology(true);
 
         try {
             send(SOURCE_LHS_TOPIC, 1L, KEY_1, "left_1");
@@ -96,9 +97,7 @@ public class LeftJoinOnTimeoutTest {
     @Test
     public void shouldJoinLeftWithRightWoStateLog(){
 
-        KafkaStreams kafkaStreams = buildLeftJoinTopology(
-                TimeUnit.SECONDS.toMillis(100),
-                TimeUnit.SECONDS.toMillis(300), false);
+        KafkaStreams kafkaStreams = buildLeftJoinTopology(false);
 
         try {
             send(SOURCE_LHS_TOPIC, 1L, KEY_1, "left_1");
@@ -116,7 +115,7 @@ public class LeftJoinOnTimeoutTest {
     @Test
     public void shouldLeftJoinOnTimeout(){
 
-        KafkaStreams kafkaStreams = buildLeftJoinTopologyShortWindow();
+        KafkaStreams kafkaStreams = buildLeftJoinTopology(true);
 
         try {
             send(SOURCE_LHS_TOPIC, 1L, KEY_1, "left");
@@ -130,19 +129,19 @@ public class LeftJoinOnTimeoutTest {
     @Test
     public void shouldLeftJoinOnTimeoutAfterRestoration() {
 
-        KafkaStreams kafkaStreams = buildLeftJoinTopologyLongWindow();
+        KafkaStreams kafkaStreams = buildLeftJoinTopology(true);
 
         try {
             send(SOURCE_LHS_TOPIC, 1L, KEY_1, "left");
             send(SOURCE_LHS_TOPIC, 1L, KEY_2, "left");
 
-            await(subscribe(SCHEDULED_CHANGE_LOG_TOPIC), 2);
+            await(queue.subscribe(SCHEDULED_CHANGE_LOG_TOPIC), 2);
 
         } finally {
             closeAndCleanUp(kafkaStreams);
         }
 
-        KafkaStreams kafkaStreamsNew = buildLeftJoinTopologyShortWindow();
+        KafkaStreams kafkaStreamsNew = buildLeftJoinTopology(true);
 
         try {
             await(joinedMessages, new String[]{"key", "value"}, new Tuple(KEY_1, "left+"), new Tuple(KEY_2, "left+"));
@@ -154,15 +153,15 @@ public class LeftJoinOnTimeoutTest {
     @Test
     public void shouldLeftJoinOnTimeoutAfterRebalance() {
 
-        KafkaStreams kafkaStreams = buildLeftJoinTopologyLongWindow();
+        KafkaStreams kafkaStreams = buildLeftJoinTopology(true);
 
         try {
             send(SOURCE_LHS_TOPIC, 1L, KEY_1, "left");
             send(SOURCE_LHS_TOPIC, 1L, KEY_3, "left");
 
-            await(subscribe(SCHEDULED_CHANGE_LOG_TOPIC), 2);
+            await(queue.subscribe(SCHEDULED_CHANGE_LOG_TOPIC), 2);
 
-            KafkaStreams kafkaStreamsNew = buildLeftJoinTopologyShortWindow();
+            KafkaStreams kafkaStreamsNew = buildLeftJoinTopology(true);
 
             try {
                 await(joinedMessages, 1);
@@ -180,20 +179,7 @@ public class LeftJoinOnTimeoutTest {
         kafkaStreams.cleanUp();
     }
 
-    private KafkaStreams buildLeftJoinTopologyLongWindow() {
-        return buildLeftJoinTopology(
-                TimeUnit.SECONDS.toMillis(100),
-                TimeUnit.SECONDS.toMillis(300), true);
-    }
-
-    private KafkaStreams buildLeftJoinTopologyShortWindow() {
-        return buildLeftJoinTopology(SLIDING_WINDOW_DURATION_IN_MS,
-                SLIDING_WINDOW_DURATION_IN_MS * 3,
-                true);
-    }
-
-    private KafkaStreams buildLeftJoinTopology(
-            long joinerSlidingWindowDurationInMs, long joinerSlidingWindowRetentionInMs, boolean enableStateLog){
+    private KafkaStreams buildLeftJoinTopology(boolean enableStateLog) {
         StreamsBuilder kStreamBuilder = new StreamsBuilder();
 
         KStream<Long, String> sourceLhs = kStreamBuilder.stream(SOURCE_LHS_TOPIC, Consumed.with(Serdes.Long(), Serdes.String()));
@@ -201,7 +187,7 @@ public class LeftJoinOnTimeoutTest {
 
         LeftJoinOnTimeoutBuilder<Long, String, String, String> builder = new LeftJoinOnTimeoutBuilder<>(kStreamBuilder, sourceLhs, sourceRhs,
                 (lhs, rhs) -> StringUtils.isNotEmpty(rhs) ? lhs + "+" + rhs : lhs + "+",
-                joinerSlidingWindowDurationInMs, joinerSlidingWindowRetentionInMs)
+                SLIDING_WINDOW_DURATION_IN_MS, SLIDING_WINDOW_DURATION_IN_MS * 3)
                 .sinkTo(TARGET_TOPIC, producer(ByteArraySerializer.class, ByteArraySerializer.class))
                 .serdes(Serdes.Long(), Serdes.String(), Serdes.String(), Serdes.String());
         if (enableStateLog) {
@@ -216,14 +202,14 @@ public class LeftJoinOnTimeoutTest {
         return kafkaStreams;
     }
 
-    private void await(Collection<ConsumerRecord<Long, String>> records, int size){
+    private void await(Collection<ConsumerRecord<Long, String>> records, int size) {
         Awaitility.await()
                 .atMost(30, SECONDS)
                 .pollInterval(Duration.ONE_HUNDRED_MILLISECONDS)
                 .untilAsserted(() -> Assertions.assertThat(records).size().isEqualTo(size));
     }
 
-    private void await(Collection<ConsumerRecord<Long, String>> records, String[] properties, Tuple... values){
+    private void await(Collection<ConsumerRecord<Long, String>> records, String[] properties, Tuple... values) {
         Awaitility.await()
                 .atMost(30, SECONDS)
                 .pollInterval(Duration.ONE_HUNDRED_MILLISECONDS)
@@ -232,7 +218,7 @@ public class LeftJoinOnTimeoutTest {
                         .containsExactly(values));
     }
 
-    private RecordMetadata send(String topic, long timestamp, Long key, String value){
+    private RecordMetadata send(String topic, long timestamp, Long key, String value) {
         try {
             return producer.send(new ProducerRecord<>(topic, null, timestamp, key, value)).get();
         } catch (Exception e) {
@@ -241,28 +227,35 @@ public class LeftJoinOnTimeoutTest {
         }
     }
 
-    private <K, V> Producer<K, V> producer(Class keySerializer, Class valueSerializer){
+    private <K, V> Producer<K, V> producer(Class keySerializer, Class valueSerializer) {
         return new KafkaProducer<>(producerConfigs(keySerializer, valueSerializer));
     }
 
+    final class CancellableRecordQueue {
+        private ConcurrentLinkedQueue<ConsumerRecord<Long, String>> records = new ConcurrentLinkedQueue<>();
+        private final Consumer<Long, String> consumer = new KafkaConsumer<>(consumerConfigs());
+        private boolean shouldPoll = false;
 
-    private ConcurrentLinkedQueue<ConsumerRecord<Long, String>> subscribe(String topic){
-        ConcurrentLinkedQueue<ConsumerRecord<Long, String>> records = new ConcurrentLinkedQueue<>();
-        final Consumer<Long, String> consumer = new KafkaConsumer<>(consumerConfigs());
+        public ConcurrentLinkedQueue<ConsumerRecord<Long, String>> subscribe(String topic) {
+            shouldPoll = true;
+            consumer.subscribe(singletonList(topic));
+            new Thread(() -> {
+                while (shouldPoll) {
+                    final ConsumerRecords<Long, String> consumerRecords = consumer.poll(java.time.Duration.ofMillis(10));
+                    consumerRecords.records(topic).forEach(records::add);
+                }
+            }).start();
 
-        consumer.subscribe(singletonList(topic));
+            return records;
+        }
 
-        new Thread(() -> {
-            while (true) {
-                final ConsumerRecords<Long, String> consumerRecords = consumer.poll(java.time.Duration.ofMillis(10));
-                consumerRecords.records(topic).forEach(records::add);
-            }
-        }).start();
-
-        return records;
+        public void unsubscribe() {
+            //consumer.unsubscribe();
+            shouldPoll = false;
+        }
     }
 
-    private Properties streamsConfig(){
+    private Properties streamsConfig() {
         Properties props = new Properties();
         props.put(StreamsConfig.APPLICATION_ID_CONFIG, "left_join_app_id");
         props.put(StreamsConfig.CLIENT_ID_CONFIG, "left_join_client");
@@ -284,7 +277,7 @@ public class LeftJoinOnTimeoutTest {
         props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, kafkaEmbedded.getBrokersAsString());
         props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, LongDeserializer.class);
         props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
-        props.put(ConsumerConfig.GROUP_ID_CONFIG, "foo");
+        props.put(ConsumerConfig.GROUP_ID_CONFIG, Integer.toString(new Random().nextInt(1000000)));
         props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
         props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
         return props;
