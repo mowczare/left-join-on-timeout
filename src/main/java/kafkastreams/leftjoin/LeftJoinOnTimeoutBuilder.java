@@ -4,10 +4,8 @@ import org.apache.kafka.clients.producer.Producer;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.serialization.Serde;
 import org.apache.kafka.common.serialization.Serializer;
-import org.apache.kafka.streams.kstream.JoinWindows;
-import org.apache.kafka.streams.kstream.KStream;
-import org.apache.kafka.streams.kstream.KStreamBuilder;
-import org.apache.kafka.streams.kstream.ValueJoiner;
+import org.apache.kafka.streams.StreamsBuilder;
+import org.apache.kafka.streams.kstream.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -24,7 +22,7 @@ public class LeftJoinOnTimeoutBuilder<K, LV, RV, JV> {
     public static final long DEFAULT_TIMEOUT_GAP_IN_MS = 100;
     public static final int DEFAULT_SCHEDULED_CAPACITY = 1000;
 
-    private KStreamBuilder kStreamBuilder;
+    private StreamsBuilder kStreamBuilder;
     private KStream<K, LV> lhsStream;
     private KStream<K, RV> rhsStream;
     private ValueJoiner<? super LV, ? super RV, ? extends JV> joiner;
@@ -43,7 +41,7 @@ public class LeftJoinOnTimeoutBuilder<K, LV, RV, JV> {
 
 
     public LeftJoinOnTimeoutBuilder(
-            KStreamBuilder kStreamBuilder,
+            StreamsBuilder kStreamBuilder,
             KStream<K, LV> lhsStream,
             KStream<K, RV> rhsStream,
             ValueJoiner<? super LV, ? super RV, ? extends JV> joiner,
@@ -95,13 +93,13 @@ public class LeftJoinOnTimeoutBuilder<K, LV, RV, JV> {
     public String buildTopology(){
         validateArguments();
 
-        String scheduledStoreName = kStreamBuilder.newStoreName(SCHEDULED_STATE_STORE_PREFIX + "-" + joinTopicName+"-");
+        String scheduledStoreName = SCHEDULED_STATE_STORE_PREFIX + "-" + joinTopicName+"-";
 
         ScheduledStateStoreSupplier<K, LV> scheduledStoreSupplier = getScheduledStoreSupplier(
                 scheduledStoreName,
                 joiner, joinTopicName, keySerde.serializer(), joinedSerde.serializer(),
                 producer, leftJoinTimeoutInMs, maxScheduled);
-        if(keyClass != null){
+        if (keyClass != null){
             scheduledStoreSupplier = scheduledStoreSupplier.enableStateLog(keySerde, keyClass, lhsClass);
         }
 
@@ -112,11 +110,12 @@ public class LeftJoinOnTimeoutBuilder<K, LV, RV, JV> {
         KStream<K, JV> joinedStream = lhsStream.join(rhsStream,
                 joiner,
                 JoinWindows.of(joinWindowDurationInMs).until(joinWindowRetentionInMs),
-                keySerde, lhsSerde, rhsSerde);
+                StreamJoined.with(keySerde, lhsSerde, rhsSerde)
+        );
 
         joinedStream.process(() -> new CancelProcessor<>(scheduledStoreName), scheduledStoreName);
 
-        joinedStream.to(keySerde, joinedSerde, joinTopicName);
+        joinedStream.to(joinTopicName, Produced.with(keySerde, joinedSerde));
 
         return scheduledStoreName;
     }

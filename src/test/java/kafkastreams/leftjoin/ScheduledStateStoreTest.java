@@ -9,13 +9,13 @@ import org.apache.kafka.streams.processor.internals.ProcessorContextImpl;
 import org.apache.kafka.streams.processor.internals.RecordCollector;
 import org.awaitility.Awaitility;
 import org.awaitility.Duration;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
-import org.junit.runner.RunWith;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.Mockito;
-import org.mockito.runners.MockitoJUnitRunner;
+import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.concurrent.ConcurrentLinkedQueue;
 
@@ -24,7 +24,7 @@ import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
 
-@RunWith(MockitoJUnitRunner.class)
+@ExtendWith(MockitoExtension.class)
 public class ScheduledStateStoreTest {
 
     private ConcurrentLinkedQueue<Long> completedTasks = new ConcurrentLinkedQueue<>();
@@ -46,7 +46,7 @@ public class ScheduledStateStoreTest {
     @Mock
     private ProcessorContextImpl context;
 
-    @Before
+    @BeforeEach
     public void setupMocks(){
         Mockito.when(context.timestamp()).thenReturn(-1L);
         Mockito.when(context.taskId()).thenReturn(new TaskId(1, 2));
@@ -54,7 +54,7 @@ public class ScheduledStateStoreTest {
         scheduledStateStore.init(context, null);
     }
 
-    @After
+    @AfterEach
     public void after(){
         scheduledStateStore.close();
     }

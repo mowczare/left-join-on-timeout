@@ -124,13 +124,14 @@ public class ScheduledStateStore<K, V> implements StateStore {
         if (stateLogEnabled) {
             this.stateLogger = new StateStoreLogger<>(name, context, keySerde, scheduledSerde);
 
-            context.register(this, true, (k, v) -> {
+            //TODO logging enabled
+            context.register(this, (k, v) -> {
                 KeyValue<K, Scheduled<K, V>> keyValue = stateLogger.readChange(k, v);
                 scheduleImpl(keyValue.key, keyValue.value);
                 log.debug("Scheduled task {} restored for key {}", keyValue.value, keyValue.key);
             });
         } else {
-            context.register(this, false, null);
+            context.register(this, null);
         }
 
         this.open = true;

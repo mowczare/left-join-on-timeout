@@ -1,38 +1,40 @@
 package kafkastreams.leftjoin;
 
 import org.apache.commons.lang3.StringUtils;
-import org.apache.kafka.clients.admin.AdminClient;
-import org.apache.kafka.clients.admin.AdminClientConfig;
-import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.consumer.*;
 import org.apache.kafka.clients.producer.*;
 import org.apache.kafka.common.serialization.*;
 import org.apache.kafka.streams.KafkaStreams;
+import org.apache.kafka.streams.StreamsBuilder;
 import org.apache.kafka.streams.StreamsConfig;
+import org.apache.kafka.streams.kstream.Consumed;
 import org.apache.kafka.streams.kstream.KStream;
-import org.apache.kafka.streams.kstream.KStreamBuilder;
 import org.assertj.core.api.Assertions;
 import org.assertj.core.groups.Tuple;
 import org.awaitility.Awaitility;
 import org.awaitility.Duration;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-import org.springframework.kafka.test.rule.KafkaEmbedded;
+import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.kafka.test.EmbeddedKafkaBroker;
+import org.springframework.kafka.test.context.EmbeddedKafka;
+import org.springframework.test.annotation.DirtiesContext;
+import org.springframework.test.context.junit.jupiter.SpringExtension;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.util.*;
 import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
-import java.util.stream.Collectors;
 
 import static java.util.Arrays.asList;
 import static java.util.Collections.singletonList;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
+@EmbeddedKafka
+@DirtiesContext
+@ExtendWith(SpringExtension.class)
+@TestInstance(TestInstance.Lifecycle.PER_CLASS)
 public class LeftJoinOnTimeoutTest {
 
     public static final String SOURCE_LHS_TOPIC = "source_lhs_topic";
@@ -40,39 +42,36 @@ public class LeftJoinOnTimeoutTest {
     public static final String TARGET_TOPIC = "target_topic";
     public static final String SCHEDULED_CHANGE_LOG_TOPIC = "left_join_app_id-LJ_TIME_OUT-target_topic-STATE-STORE-0000000002-changelog";
 
-    public static final List<String> TOPICS = asList(SOURCE_LHS_TOPIC, SOURCE_RHS_TOPIC, TARGET_TOPIC,
-            SCHEDULED_CHANGE_LOG_TOPIC);
+    public static final List<String> TOPICS = asList(SOURCE_LHS_TOPIC, SOURCE_RHS_TOPIC, TARGET_TOPIC, SCHEDULED_CHANGE_LOG_TOPIC);
 
-    public static final int NUM_PARTITIONS = 2;
-    public static final long KEY_3 = 3L;
     public static final int SLIDING_WINDOW_DURATION_IN_MS = 100;
 
-    @Rule
-    public KafkaEmbedded kafkaEmbedded = new KafkaEmbedded(1, false);
+    @Autowired
+    public EmbeddedKafkaBroker kafkaEmbedded;
 
     private Producer<Long, String> producer;
 
-    private Collection<ConsumerRecord<Long, String>> joinedMessages;
+    private ConcurrentLinkedQueue<ConsumerRecord<Long, String>> joinedMessages;
 
     private static final long KEY_1 = 1L;
     private static final long KEY_2 = 2L;
+    private static final long KEY_3 = 3L;
 
-    private AdminClient adminClient;
-
-    @Before
-    public void before() throws ExecutionException, InterruptedException {
-        adminClient = AdminClient.create(adminConfig());
-
-        adminClient.createTopics(TOPICS.stream().map(name -> new NewTopic(name, NUM_PARTITIONS, (short)1))
-                .collect(Collectors.toList())).all().get();
-
+    @BeforeAll
+    public void beforeAll() {
+        kafkaEmbedded.addTopics(TOPICS.toArray(new String[TOPICS.size()]));
         producer = producer(LongSerializer.class, StringSerializer.class);
+    }
 
+    @BeforeEach
+    public void beforeEach() {
+//        kafkaEmbedded.addTopics(TOPICS.toArray(new String[TOPICS.size()]));
+//        producer = producer(LongSerializer.class, StringSerializer.class);
         joinedMessages = subscribe(TARGET_TOPIC);
     }
 
-    @After
-    public void after() {
+    @AfterEach
+    public void afterEach() {
         joinedMessages.clear();
     }
 
@@ -193,25 +192,24 @@ public class LeftJoinOnTimeoutTest {
                 true);
     }
 
-
     private KafkaStreams buildLeftJoinTopology(
             long joinerSlidingWindowDurationInMs, long joinerSlidingWindowRetentionInMs, boolean enableStateLog){
-        KStreamBuilder kStreamBuilder = new KStreamBuilder();
+        StreamsBuilder kStreamBuilder = new StreamsBuilder();
 
-        KStream<Long, String> sourceLhs = kStreamBuilder.stream(Serdes.Long(), Serdes.String(), SOURCE_LHS_TOPIC);
-        KStream<Long, String> sourceRhs = kStreamBuilder.stream(Serdes.Long(), Serdes.String(), SOURCE_RHS_TOPIC);
+        KStream<Long, String> sourceLhs = kStreamBuilder.stream(SOURCE_LHS_TOPIC, Consumed.with(Serdes.Long(), Serdes.String()));
+        KStream<Long, String> sourceRhs = kStreamBuilder.stream(SOURCE_RHS_TOPIC, Consumed.with(Serdes.Long(), Serdes.String()));
 
         LeftJoinOnTimeoutBuilder<Long, String, String, String> builder = new LeftJoinOnTimeoutBuilder<>(kStreamBuilder, sourceLhs, sourceRhs,
                 (lhs, rhs) -> StringUtils.isNotEmpty(rhs) ? lhs + "+" + rhs : lhs + "+",
                 joinerSlidingWindowDurationInMs, joinerSlidingWindowRetentionInMs)
                 .sinkTo(TARGET_TOPIC, producer(ByteArraySerializer.class, ByteArraySerializer.class))
                 .serdes(Serdes.Long(), Serdes.String(), Serdes.String(), Serdes.String());
-        if(enableStateLog) {
+        if (enableStateLog) {
             builder = builder.enableStateLog(Long.class, String.class);
         }
         builder.buildTopology();
 
-        KafkaStreams kafkaStreams = new KafkaStreams(kStreamBuilder, streamsConfig());
+        KafkaStreams kafkaStreams = new KafkaStreams(kStreamBuilder.build(), streamsConfig());
         kafkaStreams.cleanUp();
         kafkaStreams.start();
 
@@ -248,7 +246,7 @@ public class LeftJoinOnTimeoutTest {
     }
 
 
-    private Collection<ConsumerRecord<Long, String>> subscribe(String topic){
+    private ConcurrentLinkedQueue<ConsumerRecord<Long, String>> subscribe(String topic){
         ConcurrentLinkedQueue<ConsumerRecord<Long, String>> records = new ConcurrentLinkedQueue<>();
         final Consumer<Long, String> consumer = new KafkaConsumer<>(consumerConfigs());
 
@@ -256,18 +254,12 @@ public class LeftJoinOnTimeoutTest {
 
         new Thread(() -> {
             while (true) {
-                final ConsumerRecords<Long, String> consumerRecords = consumer.poll(10);
+                final ConsumerRecords<Long, String> consumerRecords = consumer.poll(java.time.Duration.ofMillis(10));
                 consumerRecords.records(topic).forEach(records::add);
             }
         }).start();
 
         return records;
-    }
-
-    private Properties adminConfig() {
-        Properties props = new Properties();
-        props.put(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, kafkaEmbedded.getBrokersAsString());
-        return props;
     }
 
     private Properties streamsConfig(){

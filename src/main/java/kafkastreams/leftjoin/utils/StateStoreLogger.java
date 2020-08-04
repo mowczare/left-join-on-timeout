@@ -26,12 +26,12 @@ public class StateStoreLogger<K, V> {
     }
 
     public void logAdded(K key, V value){
-        recordCollector.send(this.topic, key, value, this.partition, context.timestamp(),
+        recordCollector.send(this.topic, key, value, null, this.partition, context.timestamp(),
                 keySerde.serializer(), valueSerde.serializer());
     }
 
     public void logRemoved(K key){
-        recordCollector.send(this.topic, key, null, this.partition, context.timestamp(),
+        recordCollector.send(this.topic, key, null, null, this.partition, context.timestamp(),
                 keySerde.serializer(), valueSerde.serializer());
     }
 
