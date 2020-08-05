@@ -30,8 +30,8 @@ import static java.util.Arrays.asList;
 import static java.util.Collections.singletonList;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
-@EmbeddedKafka
-@DirtiesContext
+@EmbeddedKafka(ports = {8169}) //constant
+@DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_EACH_TEST_METHOD) //Start with empty kafkaEmbedded for each test case
 @ExtendWith(SpringExtension.class)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 public class LeftJoinOnTimeoutTest {
@@ -60,12 +60,12 @@ public class LeftJoinOnTimeoutTest {
 
     @BeforeAll
     public void beforeAll() {
-        kafkaEmbedded.addTopics(TOPICS.toArray(new String[TOPICS.size()]));
         producer = producer(LongSerializer.class, StringSerializer.class);
     }
 
     @BeforeEach
     public void beforeEach() {
+        kafkaEmbedded.addTopics(TOPICS.toArray(new String[TOPICS.size()]));
         queue = new CancellableRecordQueue();
         joinedMessages = queue.subscribe(TARGET_TOPIC);
     }
