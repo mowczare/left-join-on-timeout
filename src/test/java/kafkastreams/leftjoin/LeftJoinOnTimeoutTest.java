@@ -65,14 +65,15 @@ public class LeftJoinOnTimeoutTest {
 
     @BeforeEach
     public void beforeEach() {
-        kafkaEmbedded.addTopics(TOPICS.toArray(new String[TOPICS.size()]));
+        try {
+            kafkaEmbedded.addTopics(TOPICS.toArray(new String[TOPICS.size()]));
+        } catch (Exception e) {} // Topic may already exist
         queue = new CancellableRecordQueue();
         joinedMessages = queue.subscribe(TARGET_TOPIC);
     }
 
     @AfterEach
     public void afterEach() {
-        queue.unsubscribe();
         joinedMessages.clear();
     }
 
@@ -89,6 +90,22 @@ public class LeftJoinOnTimeoutTest {
             await(joinedMessages, new String[]{"key", "value"},
                     new Tuple(KEY_1, "left_1+right"),
                     new Tuple(KEY_1, "left_2+right"));
+        } finally {
+            closeAndCleanUp(kafkaStreams);
+        }
+    }
+
+    @Test
+    public void shouldJoinRightWithLateLeft() {
+
+        KafkaStreams kafkaStreams = buildLeftJoinTopology(true);
+
+        try {
+            send(SOURCE_RHS_TOPIC, 1L, KEY_1, "right");
+            send(SOURCE_LHS_TOPIC, 101L, KEY_1, "left");
+
+            await(joinedMessages, new String[]{"key", "value"},
+                    new Tuple(KEY_1, "left+right"));
         } finally {
             closeAndCleanUp(kafkaStreams);
         }
@@ -164,7 +181,7 @@ public class LeftJoinOnTimeoutTest {
             KafkaStreams kafkaStreamsNew = buildLeftJoinTopology(true);
 
             try {
-                await(joinedMessages, 1);
+                await(joinedMessages, 2);
             } finally {
                 closeAndCleanUp(kafkaStreamsNew);
             }
@@ -233,25 +250,18 @@ public class LeftJoinOnTimeoutTest {
 
     final class CancellableRecordQueue {
         private ConcurrentLinkedQueue<ConsumerRecord<Long, String>> records = new ConcurrentLinkedQueue<>();
-        private final Consumer<Long, String> consumer = new KafkaConsumer<>(consumerConfigs());
-        private boolean shouldPoll = false;
 
         public ConcurrentLinkedQueue<ConsumerRecord<Long, String>> subscribe(String topic) {
-            shouldPoll = true;
-            consumer.subscribe(singletonList(topic));
             new Thread(() -> {
-                while (shouldPoll) {
+                final Consumer<Long, String> consumer = new KafkaConsumer<>(consumerConfigs());
+                consumer.subscribe(singletonList(topic));
+                while (true) {
                     final ConsumerRecords<Long, String> consumerRecords = consumer.poll(java.time.Duration.ofMillis(10));
                     consumerRecords.records(topic).forEach(records::add);
                 }
             }).start();
 
             return records;
-        }
-
-        public void unsubscribe() {
-            //consumer.unsubscribe();
-            shouldPoll = false;
         }
     }
 
